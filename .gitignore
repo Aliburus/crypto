@@ -1,0 +1,28 @@
+# Node
+node_modules/
+**/node_modules/
+
+# Builds
+/dist/
+/build/
+*.log
+
+# Env
+.env
+backend/.env
+
+# Editor/OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Vite
+frontend/.vite
+
+# Cache
+*.cache
+
+# Keep data dir tracked but not empty
+backend/data/*.tmp
+!backend/data/.gitkeep
