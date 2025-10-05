@@ -200,6 +200,12 @@ body {
   width: 100%;
   border-collapse: collapse;
 }
+.table-wrap,
+.responsive-scroll {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
 .table th,
 .table td {
   padding: 10px;
@@ -245,3 +251,22 @@ body {
   }
 }
 
+/* Extra small phones */
+@media (max-width: 420px) {
+  .fav-id {
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+  }
+  .fav-id span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .table th,
+  .table td {
+    padding: 8px;
+    font-size: 14px;
+  }
+}

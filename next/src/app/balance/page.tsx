@@ -38,9 +38,7 @@ export default function BalancePage() {
     } catch {}
   }, []);
 
-  React.useEffect(() => {
-    localStorage.setItem("holdings", JSON.stringify(holdings));
-  }, [holdings]);
+  // Do not persist holdings to localStorage; persistence handled via Mongo snapshots
 
   React.useEffect(() => {
     if (!isMounted) return;
@@ -53,6 +51,33 @@ export default function BalancePage() {
       return Array.from(map.values());
     });
   }, [isMounted, favorites]);
+
+  // On first mount, hydrate holdings from latest Mongo snapshot if available
+  React.useEffect(() => {
+    if (!isMounted) return;
+    const loadLatest = async () => {
+      try {
+        const r = await fetch("/api/balance", { cache: "no-store" });
+        const data = (await r.json()) as {
+          snapshots?: Array<{ holdings: { id: string; amount: number }[] }>;
+        };
+        const latest = data?.snapshots?.[0];
+        if (
+          latest &&
+          Array.isArray(latest.holdings) &&
+          latest.holdings.length > 0
+        ) {
+          setHoldings(
+            latest.holdings.map((h) => ({
+              id: h.id,
+              amount: Number(h.amount) || 0,
+            }))
+          );
+        }
+      } catch {}
+    };
+    void loadLatest();
+  }, [isMounted]);
 
   React.useEffect(() => {
     const load = async () => {
@@ -136,10 +161,57 @@ export default function BalancePage() {
     return () => clearInterval(i);
   }, [lastUpdated]);
 
-  const total = holdings.reduce(
-    (sum, h) => sum + (prices[h.id] ?? 0) * (h.amount || 0),
-    0
+  // Compute total and prepare snapshot saver BEFORE effects that use it
+  const total = React.useMemo(
+    () =>
+      holdings.reduce(
+        (sum, h) => sum + (prices[h.id] ?? 0) * (h.amount || 0),
+        0
+      ),
+    [holdings, prices]
   );
+
+  const saveSnapshot = React.useCallback(async () => {
+    try {
+      const payload = { holdings, totalUsd: total };
+      const r = await fetch("/api/balance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        // eslint-disable-next-line no-console
+        console.error("snapshot_save_failed", r.status, t);
+      }
+    } catch {}
+  }, [holdings, total]);
+
+  // Debounced autosave to Mongo when holdings change
+  React.useEffect(() => {
+    if (!isMounted) return;
+    const t = setTimeout(() => {
+      void saveSnapshot();
+    }, 1000);
+    return () => clearTimeout(t);
+  }, [isMounted, holdings, saveSnapshot]);
+
+  // Save snapshot every 15m and on manual refresh
+  React.useEffect(() => {
+    if (!isMounted) return;
+    const ts = Number(localStorage.getItem("snapshotLast") || 0);
+    if (!ts || Date.now() - ts >= 900000) {
+      void saveSnapshot();
+      localStorage.setItem("snapshotLast", String(Date.now()));
+    }
+    const handler = () => {
+      void saveSnapshot();
+      localStorage.setItem("snapshotLast", String(Date.now()));
+    };
+    window.addEventListener("manual-refresh", handler as EventListener);
+    return () =>
+      window.removeEventListener("manual-refresh", handler as EventListener);
+  }, [isMounted, saveSnapshot]);
   const favoriteById = React.useMemo(() => {
     const map = new Map<
       string,
@@ -210,102 +282,111 @@ export default function BalancePage() {
           </span>
         )}
       </div>
-      <table className="table">
-        <thead>
-          <tr>
-            <th>Coin</th>
-            <th style={{ textAlign: "right" }}>Amount</th>
-            <th style={{ textAlign: "right" }}>Price (USD)</th>
-            <th style={{ textAlign: "right" }}>Value (USD)</th>
-            <th style={{ textAlign: "right" }}>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {holdings.map((h) => (
-            <tr key={h.id}>
-              <td>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  {favoriteById.get(h.id)?.thumb && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={favoriteById.get(h.id)!.thumb}
-                      alt=""
-                      width={20}
-                      height={20}
-                      style={{ borderRadius: 999 }}
-                    />
-                  )}
-                  <div>
-                    <div style={{ color: "#e6ebf5", fontWeight: 600 }}>
-                      {favoriteById.get(h.id)?.name ?? h.id}
-                    </div>
-                    {favoriteById.get(h.id)?.symbol && (
-                      <div className="price">
-                        ({favoriteById.get(h.id)!.symbol})
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </td>
-              <td style={{ textAlign: "right" }}>
-                <input
-                  className="input"
-                  inputMode="decimal"
-                  value={drafts[h.id] ?? String(h.amount)}
-                  onChange={(e) => {
-                    const nextRaw = e.target.value;
-                    setDrafts((prev) => ({ ...prev, [h.id]: nextRaw }));
-                  }}
-                  onBlur={() => {
-                    const raw = drafts[h.id];
-                    const parsed =
-                      raw != null ? parseFlexibleNumber(raw) : h.amount;
-                    const amt = parsed ?? 0;
-                    setHoldings((prev) =>
-                      prev.map((x) =>
-                        x.id === h.id ? { ...x, amount: amt } : x
-                      )
-                    );
-                    setDrafts((prev) => {
-                      const { [h.id]: _, ...rest } = prev;
-                      return rest;
-                    });
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      (e.target as HTMLInputElement).blur();
-                    }
-                  }}
-                  style={{ width: 140, textAlign: "right" }}
-                />
-              </td>
-              <td style={{ textAlign: "right" }}>
-                {formatUsdPrice(prices[h.id] ?? 0)}
-              </td>
-              <td style={{ textAlign: "right" }}>
-                {hidden
-                  ? "••••"
-                  : formatUsdPrice((prices[h.id] ?? 0) * (h.amount || 0))}
-              </td>
-              <td style={{ textAlign: "right" }}>
-                <button
-                  className="btn ghost"
-                  onClick={() => {
-                    setHoldings((prev) => {
-                      const next = prev.filter((x) => x.id !== h.id);
-                      localStorage.setItem("holdings", JSON.stringify(next));
-                      return next;
-                    });
-                    setFavorites((prev) => prev.filter((f) => f.id !== h.id));
-                  }}
-                >
-                  Remove
-                </button>
-              </td>
+      <div className="table-wrap">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Coin</th>
+              <th style={{ textAlign: "right" }}>Amount</th>
+              <th style={{ textAlign: "right" }}>Price (USD)</th>
+              <th style={{ textAlign: "right" }}>Value (USD)</th>
+              <th style={{ textAlign: "right" }}>Actions</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {holdings.map((h) => (
+              <tr key={h.id}>
+                <td>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 10 }}
+                  >
+                    {favoriteById.get(h.id)?.thumb && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={favoriteById.get(h.id)!.thumb}
+                        alt=""
+                        width={20}
+                        height={20}
+                        style={{ borderRadius: 999 }}
+                      />
+                    )}
+                    <div>
+                      <div style={{ color: "#e6ebf5", fontWeight: 600 }}>
+                        {favoriteById.get(h.id)?.name ?? h.id}
+                      </div>
+                      {favoriteById.get(h.id)?.symbol && (
+                        <div className="price">
+                          ({favoriteById.get(h.id)!.symbol})
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  <input
+                    className="input"
+                    inputMode="decimal"
+                    value={drafts[h.id] ?? String(h.amount)}
+                    onChange={(e) => {
+                      const nextRaw = e.target.value;
+                      setDrafts((prev) => ({ ...prev, [h.id]: nextRaw }));
+                      const parsed = parseFlexibleNumber(nextRaw);
+                      if (parsed !== null) {
+                        const amt = parsed;
+                        setHoldings((prev) =>
+                          prev.map((x) =>
+                            x.id === h.id ? { ...x, amount: amt } : x
+                          )
+                        );
+                      }
+                    }}
+                    onBlur={() => {
+                      const raw = drafts[h.id];
+                      const parsed =
+                        raw != null ? parseFlexibleNumber(raw) : h.amount;
+                      const amt = parsed ?? 0;
+                      setHoldings((prev) =>
+                        prev.map((x) =>
+                          x.id === h.id ? { ...x, amount: amt } : x
+                        )
+                      );
+                      setDrafts((prev) => {
+                        const { [h.id]: _, ...rest } = prev;
+                        return rest;
+                      });
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        (e.target as HTMLInputElement).blur();
+                      }
+                    }}
+                    style={{ width: 140, textAlign: "right" }}
+                  />
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  {formatUsdPrice(prices[h.id] ?? 0)}
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  {hidden
+                    ? "••••"
+                    : formatUsdPrice((prices[h.id] ?? 0) * (h.amount || 0))}
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  <button
+                    className="btn ghost"
+                    onClick={() => {
+                      setHoldings((prev) => prev.filter((x) => x.id !== h.id));
+                      setFavorites((prev) => prev.filter((f) => f.id !== h.id));
+                    }}
+                  >
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

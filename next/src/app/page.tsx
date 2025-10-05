@@ -165,8 +165,12 @@ export default function FavoritesPage() {
       >
         <span style={{ flex: 1 }}>Favorites</span>
         {isMounted && lastUpdated && (
-          <span className="price" style={{ marginRight: 8 }}>
-            Last: {new Date(lastUpdated).toLocaleTimeString()} · Next:{" "}
+          <span
+            className="price"
+            style={{ marginRight: 8 }}
+            suppressHydrationWarning
+          >
+            Last: {new Date(lastUpdated).toLocaleTimeString("en-US", { timeZone: "UTC" })} · Next:{" "}
             {countdown}
           </span>
         )}
