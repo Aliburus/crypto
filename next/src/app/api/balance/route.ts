@@ -8,6 +8,7 @@ type Snapshot = {
   holdings: Array<{ id: string; amount: number }>;
   totalUsd: number;
 };
+type LatestSnapshot = Omit<Snapshot, "_id"> & { _id: string };
 
 // Let getDb infer DB name from connection URI when env not provided
 const DB_NAME = process.env.MONGODB_DB || process.env.MONGO_DB || "";
@@ -29,8 +30,8 @@ export async function GET() {
     // Fallback: if history empty, try latest
     if (!docs || docs.length === 0) {
       const latest = (await db
-        .collection<{ _id: string } & Snapshot>(LATEST_COLLECTION)
-        .findOne({ _id: "latest" })) as (Snapshot & { _id: string }) | null;
+        .collection<LatestSnapshot>(LATEST_COLLECTION)
+        .findOne({ _id: "latest" })) as LatestSnapshot | null;
       if (latest) {
         return NextResponse.json({ snapshots: [latest] });
       }
@@ -69,9 +70,10 @@ export async function POST(req: NextRequest) {
     const db = await getDb(DB_NAME);
     const col = db.collection<Snapshot>(COLLECTION);
     // 1) Upsert latest snapshot separately
+    const latestDoc: LatestSnapshot = { _id: "latest", ...doc } as LatestSnapshot;
     await db
-      .collection<{ _id: string } & Snapshot>(LATEST_COLLECTION)
-      .updateOne({ _id: "latest" }, { $set: doc }, { upsert: true });
+      .collection<LatestSnapshot>(LATEST_COLLECTION)
+      .updateOne({ _id: "latest" }, { $set: latestDoc }, { upsert: true });
     // 2) Append to history
     await col.insertOne(doc);
     // keep only last HISTORY_LIMIT
