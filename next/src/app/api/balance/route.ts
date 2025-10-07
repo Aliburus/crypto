@@ -37,13 +37,21 @@ export async function POST(req: NextRequest) {
     if (!body || !Array.isArray(body.holdings)) {
       return NextResponse.json({ error: "invalid_body" }, { status: 400 });
     }
+    // Reject only when there are no holdings at all; allow zero amounts so
+    // that newly added favorites are persisted and can be edited later
+    const normalizedHoldings = body.holdings
+      .map((h) => ({ id: String(h.id), amount: Number(h.amount) }))
+      .filter((h) => h.id && !Number.isNaN(h.amount));
+    if (normalizedHoldings.length === 0) {
+      return NextResponse.json(
+        { error: "empty_holdings", message: "No holdings provided" },
+        { status: 400 }
+      );
+    }
     const doc: Snapshot = {
       ts: new Date().toISOString(),
-      holdings: body.holdings.map((h) => ({
-        id: String(h.id),
-        amount: Number(h.amount),
-      })),
-      totalUsd: Number(body.totalUsd) || 0,
+      holdings: normalizedHoldings,
+      totalUsd: Math.max(0, Number(body.totalUsd) || 0),
     };
     const db = await getDb(DB_NAME);
     const col = db.collection<Snapshot>(COLLECTION);
