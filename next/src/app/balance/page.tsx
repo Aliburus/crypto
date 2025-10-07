@@ -1,14 +1,12 @@
 "use client";
 import React from "react";
 import { parseFlexibleNumber, formatUsdPrice } from "../../utils/number";
+import { SearchBar } from "../../components/SearchBar";
 
 type Holding = { id: string; amount: number };
 
 export default function BalancePage() {
   const [isMounted, setIsMounted] = React.useState<boolean>(false);
-  const [favorites, setFavorites] = React.useState<
-    { id: string; name?: string; symbol?: string; thumb?: string }[]
-  >([]);
   const [holdings, setHoldings] = React.useState<Holding[]>([]);
   const [prices, setPrices] = React.useState<Record<string, number>>({});
   const [lastUpdated, setLastUpdated] = React.useState<number | null>(null);
@@ -25,10 +23,6 @@ export default function BalancePage() {
   React.useEffect(() => {
     setIsMounted(true);
     try {
-      const favRaw = localStorage.getItem("favorites");
-      if (favRaw) setFavorites(JSON.parse(favRaw));
-    } catch {}
-    try {
       const holdRaw = localStorage.getItem("holdings");
       if (holdRaw) setHoldings(JSON.parse(holdRaw));
     } catch {}
@@ -40,17 +34,7 @@ export default function BalancePage() {
 
   // Do not persist holdings to localStorage; persistence handled via Mongo snapshots
 
-  React.useEffect(() => {
-    if (!isMounted) return;
-    const ids = new Set(favorites.map((f) => f.id));
-    setHoldings((prev) => {
-      const map = new Map(prev.map((h) => [h.id, h]));
-      ids.forEach((id) => {
-        if (!map.has(id)) map.set(id, { id, amount: 0 });
-      });
-      return Array.from(map.values());
-    });
-  }, [isMounted, favorites]);
+  // Balance page no longer syncs from favorites; holdings managed locally here
 
   // On first mount, hydrate holdings from latest Mongo snapshot if available
   React.useEffect(() => {
@@ -206,14 +190,11 @@ export default function BalancePage() {
     return () =>
       window.removeEventListener("manual-refresh", handler as EventListener);
   }, [isMounted, saveSnapshot]);
-  const favoriteById = React.useMemo(() => {
-    const map = new Map<
-      string,
-      { id: string; name?: string; symbol?: string; thumb?: string }
-    >();
-    favorites.forEach((f) => map.set(f.id, f));
-    return map;
-  }, [favorites]);
+  // Minimal metadata map; balance page does not depend on favorites metadata
+  const metaById = React.useMemo(
+    () => new Map<string, { thumb?: string; name?: string; symbol?: string }>(),
+    []
+  );
 
   React.useEffect(() => {
     const now = Date.now();
@@ -268,6 +249,16 @@ export default function BalancePage() {
           {hidden ? "👁" : "🙈"}
         </button>
       </div>
+      <div style={{ marginBottom: 12 }}>
+        <SearchBar
+          onSelect={(coin) => {
+            setHoldings((prev) => {
+              if (prev.some((h) => h.id === coin.id)) return prev;
+              return [...prev, { id: coin.id, amount: 0 }];
+            });
+          }}
+        />
+      </div>
       <div className="card" style={{ padding: 12, marginBottom: 12 }}>
         Total: {hidden ? "••••" : `$${total.toLocaleString()}`}{" "}
         {usdTry > 0 && (
@@ -294,10 +285,10 @@ export default function BalancePage() {
                   <div
                     style={{ display: "flex", alignItems: "center", gap: 10 }}
                   >
-                    {favoriteById.get(h.id)?.thumb && (
+                    {metaById.get(h.id)?.thumb && (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
-                        src={favoriteById.get(h.id)!.thumb}
+                        src={metaById.get(h.id)!.thumb as string}
                         alt=""
                         width={20}
                         height={20}
@@ -306,11 +297,11 @@ export default function BalancePage() {
                     )}
                     <div>
                       <div style={{ color: "#e6ebf5", fontWeight: 600 }}>
-                        {favoriteById.get(h.id)?.name ?? h.id}
+                        {metaById.get(h.id)?.name ?? h.id}
                       </div>
-                      {favoriteById.get(h.id)?.symbol && (
+                      {metaById.get(h.id)?.symbol && (
                         <div className="price">
-                          ({favoriteById.get(h.id)!.symbol})
+                          ({metaById.get(h.id)!.symbol as string})
                         </div>
                       )}
                     </div>
@@ -370,7 +361,6 @@ export default function BalancePage() {
                     className="btn ghost"
                     onClick={() => {
                       setHoldings((prev) => prev.filter((x) => x.id !== h.id));
-                      setFavorites((prev) => prev.filter((f) => f.id !== h.id));
                     }}
                   >
                     Remove

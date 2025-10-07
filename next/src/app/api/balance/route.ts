@@ -11,7 +11,11 @@ type Snapshot = {
 
 // Let getDb infer DB name from connection URI when env not provided
 const DB_NAME = process.env.MONGODB_DB || process.env.MONGO_DB || "";
-const COLLECTION = process.env.MONGODB_COLLECTION || "crypto";
+const COLLECTION = process.env.MONGODB_COLLECTION || "crypto"; // history
+const LATEST_COLLECTION =
+  process.env.MONGODB_COLLECTION_LATEST || "crypto_latest";
+const HISTORY_LIMIT =
+  Number.parseInt(process.env.BALANCE_HISTORY_LIMIT || "10", 10) || 10;
 
 export async function GET() {
   try {
@@ -20,8 +24,17 @@ export async function GET() {
       .collection<Snapshot>(COLLECTION)
       .find({})
       .sort({ ts: -1 })
-      .limit(10)
+      .limit(HISTORY_LIMIT)
       .toArray()) as Snapshot[];
+    // Fallback: if history empty, try latest
+    if (!docs || docs.length === 0) {
+      const latest = (await db
+        .collection<{ _id: string } & Snapshot>(LATEST_COLLECTION)
+        .findOne({ _id: "latest" })) as (Snapshot & { _id: string }) | null;
+      if (latest) {
+        return NextResponse.json({ snapshots: [latest] });
+      }
+    }
     return NextResponse.json({ snapshots: docs });
   } catch (err) {
     return NextResponse.json(
@@ -55,12 +68,17 @@ export async function POST(req: NextRequest) {
     };
     const db = await getDb(DB_NAME);
     const col = db.collection<Snapshot>(COLLECTION);
+    // 1) Upsert latest snapshot separately
+    await db
+      .collection<{ _id: string } & Snapshot>(LATEST_COLLECTION)
+      .updateOne({ _id: "latest" }, { $set: doc }, { upsert: true });
+    // 2) Append to history
     await col.insertOne(doc);
-    // keep only last 10
+    // keep only last HISTORY_LIMIT
     const olderDocs: Array<WithId<Snapshot>> = (await col
       .find({}, { projection: { _id: 1 } })
       .sort({ ts: -1 })
-      .skip(10)
+      .skip(HISTORY_LIMIT)
       .toArray()) as Array<WithId<Snapshot>>;
     if (olderDocs.length > 0) {
       const ids: ObjectId[] = olderDocs.map(
