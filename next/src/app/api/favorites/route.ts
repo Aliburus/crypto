@@ -1,0 +1,51 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getDb } from "../../../lib/mongo";
+
+type Favorite = {
+  id: string;
+  name?: string;
+  symbol?: string;
+  thumb?: string;
+  price?: number; // optional cached price to show immediately
+};
+
+const DB_NAME = process.env.MONGODB_DB || process.env.MONGO_DB || "app";
+const COLLECTION = process.env.MONGODB_COLLECTION_FAVS || "favorites";
+
+export async function GET() {
+  try {
+    const db = await getDb(DB_NAME);
+    const docs = await db
+      .collection<{ _id: string; favorites: Favorite[] }>(COLLECTION)
+      .findOne({ _id: "default" });
+    return NextResponse.json({ favorites: docs?.favorites ?? [] });
+  } catch (err) {
+    return NextResponse.json(
+      { error: "db_read_failed", message: String(err) },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = (await req.json()) as { favorites: Favorite[] };
+    if (!body || !Array.isArray(body.favorites)) {
+      return NextResponse.json({ error: "invalid_body" }, { status: 400 });
+    }
+    const db = await getDb(DB_NAME);
+    await db
+      .collection<{ _id: string; favorites: Favorite[] }>(COLLECTION)
+      .updateOne(
+        { _id: "default" },
+        { $set: { favorites: body.favorites } },
+        { upsert: true }
+      );
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return NextResponse.json(
+      { error: "db_write_failed", message: String(err) },
+      { status: 500 }
+    );
+  }
+}

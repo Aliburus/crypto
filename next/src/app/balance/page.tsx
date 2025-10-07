@@ -101,9 +101,13 @@ export default function BalancePage() {
         pm[id] = data[id]?.usd ?? 0;
       });
       setPrices(pm);
-      try {
-        localStorage.setItem("priceCache_balance", JSON.stringify(pm));
-      } catch {}
+      // save server-side cache for quick hydration on reload
+      void fetch("/api/price-cache", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prices: pm }),
+      });
+      // no local cache
       const now = Date.now();
       setLastUpdated(now);
       try {
@@ -117,8 +121,7 @@ export default function BalancePage() {
       } catch {}
     };
     const checkAndLoad = () => {
-      const ts =
-        lastUpdated ?? Number(localStorage.getItem("priceLast_balance") || 0);
+      const ts = lastUpdated ?? 0;
       if (!ts || Date.now() - ts >= 900000) {
         load();
       }
@@ -134,13 +137,6 @@ export default function BalancePage() {
   }, [isMounted, holdings, lastUpdated]);
 
   React.useEffect(() => {
-    try {
-      const raw = localStorage.getItem("priceCache_balance");
-      if (raw) {
-        const cached = JSON.parse(raw) as Record<string, number>;
-        setPrices((prev) => ({ ...cached, ...prev }));
-      }
-    } catch {}
     const tick = () => {
       if (!lastUpdated) {
         setCountdown("");
@@ -199,14 +195,12 @@ export default function BalancePage() {
   // Save snapshot every 15m and on manual refresh
   React.useEffect(() => {
     if (!isMounted) return;
-    const ts = Number(localStorage.getItem("snapshotLast") || 0);
+    const ts = 0;
     if (!ts || Date.now() - ts >= 900000) {
       void saveSnapshot();
-      localStorage.setItem("snapshotLast", String(Date.now()));
     }
     const handler = () => {
       void saveSnapshot();
-      localStorage.setItem("snapshotLast", String(Date.now()));
     };
     window.addEventListener("manual-refresh", handler as EventListener);
     return () =>

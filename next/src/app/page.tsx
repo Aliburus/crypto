@@ -3,47 +3,55 @@ import React from "react";
 import { formatUsdPrice } from "../utils/number";
 
 type Favorite = { id: string; name?: string; symbol?: string; thumb?: string };
+type FavoriteWithPrice = Favorite & { price?: number };
 
 export default function FavoritesPage() {
-  const [favorites, setFavorites] = React.useState<Favorite[]>(() => {
-    try {
-      const raw = localStorage.getItem("favorites");
-      return raw ? JSON.parse(raw) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [favorites, setFavorites] = React.useState<FavoriteWithPrice[]>([]);
   const [prices, setPrices] = React.useState<Record<string, number>>({});
   const [lastUpdated, setLastUpdated] = React.useState<number | null>(null);
   const [countdown, setCountdown] = React.useState<string>("");
   const [isMounted, setIsMounted] = React.useState<boolean>(false);
 
   React.useEffect(() => {
-    const url = new URL(window.location.href);
-    const addId = url.searchParams.get("add");
-    if (addId) {
-      const extra = {
-        name: url.searchParams.get("name") || undefined,
-        symbol: url.searchParams.get("symbol") || undefined,
-        thumb: url.searchParams.get("thumb") || undefined,
-      };
-      setFavorites((prev) =>
-        prev.some((f) => f.id === addId)
-          ? prev
-          : [...prev, { id: addId, ...extra }]
-      );
-      url.searchParams.delete("add");
-      url.searchParams.delete("name");
-      url.searchParams.delete("symbol");
-      url.searchParams.delete("thumb");
-      window.history.replaceState({}, "", url.toString());
-    }
+    const init = async () => {
+      let current: FavoriteWithPrice[] = [];
+      try {
+        const r = await fetch("/api/favorites", { cache: "no-store" });
+        const data = (await r.json()) as { favorites?: FavoriteWithPrice[] };
+        current = data.favorites ?? [];
+      } catch {}
+      const url = new URL(window.location.href);
+      const addId = url.searchParams.get("add");
+      if (addId) {
+        const extra: Partial<FavoriteWithPrice> = {
+          name: url.searchParams.get("name") || undefined,
+          symbol: url.searchParams.get("symbol") || undefined,
+          thumb: url.searchParams.get("thumb") || undefined,
+        };
+        if (!current.some((f) => f.id === addId)) {
+          current = [...current, { id: addId, ...extra } as FavoriteWithPrice];
+        }
+        url.searchParams.delete("add");
+        url.searchParams.delete("name");
+        url.searchParams.delete("symbol");
+        url.searchParams.delete("thumb");
+        window.history.replaceState({}, "", url.toString());
+      }
+      setFavorites(current);
+    };
+    void init();
   }, []);
 
+  // persist to Mongo whenever favorites change (debounced)
   React.useEffect(() => {
-    try {
-      localStorage.setItem("favorites", JSON.stringify(favorites));
-    } catch {}
+    const t = setTimeout(() => {
+      void fetch("/api/favorites", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ favorites }),
+      });
+    }, 400);
+    return () => clearTimeout(t);
   }, [favorites]);
 
   const loadPrices = React.useCallback(async () => {
@@ -51,9 +59,6 @@ export default function FavoritesPage() {
       setPrices({});
       const now = Date.now();
       setLastUpdated(now);
-      try {
-        localStorage.setItem("priceLast", String(now));
-      } catch {}
       return;
     }
     const ids = favorites.map((f) => f.id).join(",");
@@ -66,14 +71,25 @@ export default function FavoritesPage() {
       map[id] = data[id]?.usd ?? 0;
     });
     setPrices(map);
-    try {
-      localStorage.setItem("priceCache", JSON.stringify(map));
-    } catch {}
+    // also update favorite documents with latest price in memory and persist
+    setFavorites((prev) =>
+      prev.map((f) => ({ ...f, price: map[f.id] } as FavoriteWithPrice))
+    );
+    void fetch("/api/favorites", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        favorites: favorites.map((f) => ({ ...f, price: map[f.id] })),
+      }),
+    });
+    // save latest to server cache
+    void fetch("/api/price-cache", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prices: map }),
+    });
     const now = Date.now();
     setLastUpdated(now);
-    try {
-      localStorage.setItem("priceLast", String(now));
-    } catch {}
   }, [favorites]);
 
   const loadPricesFor = React.useCallback(async (ids: string[]) => {
@@ -87,41 +103,28 @@ export default function FavoritesPage() {
       map[id] = data[id]?.usd ?? 0;
     });
     setPrices((prev) => ({ ...prev, ...map }));
-    try {
-      const raw = localStorage.getItem("priceCache");
-      const cache = raw ? (JSON.parse(raw) as Record<string, number>) : {};
-      const merged = { ...cache, ...map };
-      localStorage.setItem("priceCache", JSON.stringify(merged));
-    } catch {}
     const now = Date.now();
     setLastUpdated(now);
-    try {
-      localStorage.setItem("priceLast", String(now));
-    } catch {}
   }, []);
 
   React.useEffect(() => {
-    try {
-      const raw = localStorage.getItem("priceCache");
-      if (raw) {
-        const cached = JSON.parse(raw) as Record<string, number>;
-        setPrices((prev) => ({ ...cached, ...prev }));
-      }
-      const ts = localStorage.getItem("priceLast");
-      if (ts) setLastUpdated(Number(ts));
-    } catch {}
-    try {
-      const raw = localStorage.getItem("priceCache");
-      const cache = raw ? (JSON.parse(raw) as Record<string, number>) : {};
-      const missing = favorites
-        .map((f) => f.id)
-        .filter((id) => cache[id] === undefined);
-      if (missing.length > 0) {
-        void loadPricesFor(missing);
-      }
-    } catch {}
+    // hydrate prices from server cache first
+    const hydrate = async () => {
+      try {
+        const r = await fetch("/api/price-cache", { cache: "no-store" });
+        const data = (await r.json()) as { prices?: Record<string, number> };
+        if (data?.prices) setPrices((prev) => ({ ...data.prices, ...prev }));
+      } catch {}
+    };
+    void hydrate();
+    const missing = favorites
+      .map((f) => f.id)
+      .filter((id) => prices[id] === undefined);
+    if (missing.length > 0) {
+      void loadPricesFor(missing);
+    }
     const tick = () => {
-      const ts = lastUpdated ?? Number(localStorage.getItem("priceLast") || 0);
+      const ts = lastUpdated ?? 0;
       if (!ts || Date.now() - ts >= 900000) {
         loadPrices();
       }
@@ -170,8 +173,11 @@ export default function FavoritesPage() {
             style={{ marginRight: 8 }}
             suppressHydrationWarning
           >
-            Last: {new Date(lastUpdated).toLocaleTimeString("en-US", { timeZone: "UTC" })} · Next:{" "}
-            {countdown}
+            Last:{" "}
+            {new Date(lastUpdated).toLocaleTimeString("en-US", {
+              timeZone: "UTC",
+            })}{" "}
+            · Next: {countdown}
           </span>
         )}
         <button className="btn ghost" onClick={loadPrices}>
