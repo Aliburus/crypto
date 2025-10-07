@@ -9,7 +9,8 @@ type Snapshot = {
   totalUsd: number;
 };
 
-const DB_NAME = process.env.MONGODB_DB || "app";
+// Let getDb infer DB name from connection URI when env not provided
+const DB_NAME = process.env.MONGODB_DB || process.env.MONGO_DB || "";
 const COLLECTION = process.env.MONGODB_COLLECTION || "crypto";
 
 export async function GET() {
